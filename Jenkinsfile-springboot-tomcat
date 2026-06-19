@@ -1,0 +1,127 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Jenkins Pipeline: Java Spring Boot — Maven Build & Tomcat Deploy
+// Based on multi-client deployment work at Incresol Software Services
+// Tools: Git, Java 8, Maven, SonarQube, Tomcat 9
+// ─────────────────────────────────────────────────────────────────────────────
+
+pipeline {
+    agent any
+
+    environment {
+        APP_NAME   = 'springboot-app'
+        TOMCAT_DIR = '/opt/tomcat/webapps'
+        DEPLOY_ENV = 'prod'
+    }
+
+    stages {
+
+        stage('Clean Workspace') {
+            steps {
+                echo "Cleaning workspace..."
+                cleanWs()
+            }
+        }
+
+        stage('Checkout Code') {
+            steps {
+                echo "Checking out source code..."
+                git branch: 'main',
+                    credentialsId: 'github-credentials',
+                    url: 'https://github.com/your-org/springboot-app.git'
+            }
+        }
+
+        stage('Build with Maven') {
+            steps {
+                echo "Building Spring Boot app with Maven..."
+                sh '''
+                    java -version
+                    mvn --version
+                    mvn clean package -DskipTests
+                    echo "Build complete. Artifact:"
+                    ls -lh target/*.jar 2>/dev/null || ls -lh target/*.war 2>/dev/null
+                '''
+            }
+        }
+
+        stage('SonarQube Scan') {
+            steps {
+                echo "Running SonarQube code analysis..."
+                withSonarQubeEnv('SonarQube-Server') {
+                    sh 'mvn sonar:sonar -Dsonar.projectKey=${APP_NAME}'
+                }
+            }
+        }
+
+        stage('Archive Artifact') {
+            steps {
+                echo "Archiving build artifact in Jenkins..."
+                archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+            }
+        }
+
+        stage('Deploy to Tomcat') {
+            steps {
+                echo "Stopping Tomcat and deploying new build..."
+                sh '''
+                    # Stop Tomcat
+                    sudo systemctl stop tomcat || true
+
+                    # Backup the current deployed jar
+                    if [ -f "${TOMCAT_DIR}/${APP_NAME}.jar" ]; then
+                        cp ${TOMCAT_DIR}/${APP_NAME}.jar \
+                           ${TOMCAT_DIR}/${APP_NAME}-backup-$(date +%Y%m%d%H%M).jar
+                        echo "Backup created."
+                    fi
+
+                    # Copy new jar
+                    cp target/*.jar ${TOMCAT_DIR}/${APP_NAME}.jar
+                    echo "New build deployed."
+
+                    # Start Tomcat
+                    sudo systemctl start tomcat
+                    echo "Tomcat restarted."
+                '''
+            }
+        }
+
+        stage('Smoke Test') {
+            steps {
+                echo "Running smoke test on deployed application..."
+                sh '''
+                    sleep 15
+                    STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                        http://localhost:8080/${APP_NAME}/actuator/health)
+                    if [ "$STATUS" -eq 200 ]; then
+                        echo "Smoke test passed. App is live."
+                    else
+                        echo "Smoke test FAILED. HTTP Status: $STATUS"
+                        exit 1
+                    fi
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Spring Boot application deployed successfully!"
+        }
+        failure {
+            echo "Deployment failed. Attempting rollback..."
+            sh '''
+                BACKUP=$(ls -t ${TOMCAT_DIR}/${APP_NAME}-backup-*.jar 2>/dev/null | head -1)
+                if [ -n "$BACKUP" ]; then
+                    cp "$BACKUP" ${TOMCAT_DIR}/${APP_NAME}.jar
+                    sudo systemctl restart tomcat
+                    echo "Rollback completed using: $BACKUP"
+                else
+                    echo "No backup found. Manual intervention required."
+                fi
+            '''
+        }
+        always {
+            cleanWs()
+        }
+    }
+}

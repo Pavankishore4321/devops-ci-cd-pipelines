@@ -1,0 +1,135 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Jenkins Pipeline: Node.js App — Build & Deploy via Ansible
+// Based on real project at Incresol Software Services
+// Tools: Git, Node.js, npm, SonarQube, Ansible, Nginx
+// ─────────────────────────────────────────────────────────────────────────────
+
+pipeline {
+    agent any
+
+    environment {
+        APP_NAME    = 'my-nodejs-app'
+        DEPLOY_ENV  = 'dev'             // Change to 'prod' for production
+        ANSIBLE_DIR = '/etc/ansible'
+        BUILD_DIR   = 'dist'
+    }
+
+    stages {
+
+        stage('Clean Workspace') {
+            steps {
+                echo "Cleaning old files from workspace..."
+                sh '''
+                    if [ -d "${WORKSPACE}/${APP_NAME}" ]; then
+                        rm -rf ${WORKSPACE}/${APP_NAME}
+                        echo "Workspace cleaned."
+                    else
+                        echo "Workspace already clean."
+                    fi
+                '''
+            }
+        }
+
+        stage('Checkout Code') {
+            steps {
+                echo "Pulling latest code from Git repository..."
+                git branch: "${DEPLOY_ENV}",
+                    credentialsId: 'github-credentials',
+                    url: 'https://github.com/your-org/your-nodejs-app.git'
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                echo "Installing Node.js packages..."
+                dir('app') {
+                    sh '''
+                        export TERM=xterm-256color
+                        node --version
+                        npm --version
+                        npm install --force
+                    '''
+                }
+            }
+        }
+
+        stage('Code Quality - SonarQube') {
+            steps {
+                echo "Running SonarQube scan for code quality..."
+                withSonarQubeEnv('SonarQube-Server') {
+                    dir('app') {
+                        sh '''
+                            npx sonar-scanner \
+                                -Dsonar.projectKey=${APP_NAME} \
+                                -Dsonar.sources=src \
+                                -Dsonar.host.url=${SONAR_HOST_URL} \
+                                -Dsonar.login=${SONAR_AUTH_TOKEN}
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                echo "Checking SonarQube Quality Gate result..."
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('Build Application') {
+            steps {
+                echo "Building application for ${DEPLOY_ENV} environment..."
+                dir('app') {
+                    sh '''
+                        export TERM=xterm-256color
+                        npm run build-${DEPLOY_ENV}
+                        echo "Build complete. Files in ./${BUILD_DIR}:"
+                        ls -lh ${BUILD_DIR}/
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy via Ansible') {
+            steps {
+                echo "Deploying using Ansible playbook..."
+                sh '''
+                    ansible-playbook ${ANSIBLE_DIR}/deploy-nodejs-app.yml \
+                        --extra-vars "env=${DEPLOY_ENV} app_name=${APP_NAME}" \
+                        -v
+                '''
+            }
+        }
+
+        stage('Health Check') {
+            steps {
+                echo "Verifying deployment is live..."
+                sh '''
+                    sleep 10
+                    STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://your-server-ip/health)
+                    if [ "$STATUS" -eq 200 ]; then
+                        echo "Health check passed. App is running."
+                    else
+                        echo "Health check FAILED. HTTP Status: $STATUS"
+                        exit 1
+                    fi
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Pipeline completed. ${APP_NAME} deployed to ${DEPLOY_ENV} successfully."
+        }
+        failure {
+            echo "Pipeline FAILED. Review the stage logs above to identify the issue."
+        }
+        always {
+            cleanWs()
+        }
+    }
+}

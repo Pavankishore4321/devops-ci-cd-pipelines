@@ -1,0 +1,86 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Azure DevOps Pipeline: Node.js App → Azure App Service
+# Based on P-Collab project at Incresol Software Services
+# Tools: Azure Repos, Node.js, Maven, Azure App Service, Azure Artifacts
+# ─────────────────────────────────────────────────────────────────────────────
+
+trigger:
+  branches:
+    include:
+      - main
+      - dev
+
+variables:
+  appName:           'my-nodejs-app'
+  azureSubscription: 'your-azure-service-connection'   # Set in Azure DevOps
+  appServiceName:    'your-app-service-name'
+  nodeVersion:       '18.x'
+  artifactFeed:      'your-azure-artifacts-feed'
+
+stages:
+
+  # ── STAGE 1: BUILD ──────────────────────────────────────────────────────────
+  - stage: Build
+    displayName: 'Build Stage'
+    jobs:
+      - job: BuildJob
+        displayName: 'Install, Build, Publish Artifact'
+        pool:
+          vmImage: 'ubuntu-latest'
+
+        steps:
+
+          - task: NodeTool@0
+            displayName: 'Install Node.js $(nodeVersion)'
+            inputs:
+              versionSpec: '$(nodeVersion)'
+
+          - script: |
+              cd app
+              npm install --force
+            displayName: 'Install npm dependencies'
+
+          - script: |
+              cd app
+              npm run build
+            displayName: 'Build application'
+
+          - task: CopyFiles@2
+            displayName: 'Copy build output'
+            inputs:
+              SourceFolder: 'app/dist'
+              Contents: '**'
+              TargetFolder: '$(Build.ArtifactStagingDirectory)'
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish artifact: drop'
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+              ArtifactName: 'drop'
+
+  # ── STAGE 2: DEPLOY ─────────────────────────────────────────────────────────
+  - stage: Deploy
+    displayName: 'Deploy Stage'
+    dependsOn: Build
+    condition: succeeded()
+
+    jobs:
+      - deployment: DeployToAppService
+        displayName: 'Deploy to Azure App Service'
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: 'production'
+
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+
+                - task: AzureWebApp@1
+                  displayName: 'Deploy to $(appServiceName)'
+                  inputs:
+                    azureSubscription: '$(azureSubscription)'
+                    appType: 'webAppLinux'
+                    appName: '$(appServiceName)'
+                    package: '$(Pipeline.Workspace)/drop'
+                    runtimeStack: 'NODE|18-lts'
