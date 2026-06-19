@@ -1,24 +1,25 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Jenkins Pipeline: Node.js App — Build & Deploy via Ansible
-// Based on real project at Incresol Software Services
-// Tools: Git, Node.js, npm, SonarQube, Ansible, Nginx
+// Jenkins Pipeline: Angular Frontend — Build & Deploy via Ansible to Nginx
+// Based on AspTax frontend deployment at Incresol Software Services
+// Tools: Git, Node.js, Angular CLI (ng build), Ansible, Nginx
 // ─────────────────────────────────────────────────────────────────────────────
 
 pipeline {
     agent any
 
     environment {
-        APP_NAME    = 'my-nodejs-app'
-        DEPLOY_ENV  = 'dev'             // Change to 'prod' for production
+        APP_NAME    = 'asptax-web'
+        DEPLOY_ENV  = 'dev'               // Options: dev | prod
         ANSIBLE_DIR = '/etc/ansible'
         BUILD_DIR   = 'dist'
+        NODE_HOME   = '/usr/local/bin'
     }
 
     stages {
 
         stage('Clean Workspace') {
             steps {
-                echo "Cleaning old files from workspace..."
+                echo "Cleaning old build files from workspace..."
                 sh '''
                     if [ -d "${WORKSPACE}/${APP_NAME}" ]; then
                         rm -rf ${WORKSPACE}/${APP_NAME}
@@ -32,22 +33,24 @@ pipeline {
 
         stage('Checkout Code') {
             steps {
-                echo "Pulling latest code from Git repository..."
+                echo "Pulling latest Angular code from Git..."
                 git branch: "${DEPLOY_ENV}",
                     credentialsId: 'github-credentials',
-                    url: 'https://github.com/your-org/your-nodejs-app.git'
+                    url: 'https://github.com/your-org/asptax-web.git'
             }
         }
 
         stage('Install Dependencies') {
             steps {
-                echo "Installing Node.js packages..."
-                dir('app') {
+                echo "Installing Angular project dependencies..."
+                dir('asptax-web') {
                     sh '''
                         export TERM=xterm-256color
                         node --version
                         npm --version
+                        ng version || npx ng version
                         npm install --force
+                        echo "Dependencies installed."
                     '''
                 }
             }
@@ -55,13 +58,14 @@ pipeline {
 
         stage('Code Quality - SonarQube') {
             steps {
-                echo "Running SonarQube scan for code quality..."
+                echo "Running SonarQube scan on Angular source..."
                 withSonarQubeEnv('SonarQube-Server') {
-                    dir('app') {
+                    dir('asptax-web') {
                         sh '''
                             npx sonar-scanner \
                                 -Dsonar.projectKey=${APP_NAME} \
                                 -Dsonar.sources=src \
+                                -Dsonar.exclusions=**/node_modules/**,**/dist/** \
                                 -Dsonar.host.url=${SONAR_HOST_URL} \
                                 -Dsonar.login=${SONAR_AUTH_TOKEN}
                         '''
@@ -79,39 +83,50 @@ pipeline {
             }
         }
 
-        stage('Build Application') {
+        stage('Build Angular App') {
             steps {
-                echo "Building application for ${DEPLOY_ENV} environment..."
-                dir('app') {
+                echo "Building Angular app for ${DEPLOY_ENV} environment..."
+                dir('asptax-web') {
                     sh '''
                         export TERM=xterm-256color
-                        npm run build-${DEPLOY_ENV}
-                        echo "Build complete. Files in ./${BUILD_DIR}:"
-                        ls -lh ${BUILD_DIR}/
+
+                        if [ "${DEPLOY_ENV}" = "prod" ]; then
+                            npx ng build --configuration=production
+                        else
+                            npx ng build --configuration=${DEPLOY_ENV}
+                        fi
+
+                        echo "Angular build complete. Output files:"
+                        ls -lh ${BUILD_DIR}/${APP_NAME}/
                     '''
                 }
+                // Note: Angular outputs to dist/<app-name>/ folder
+                // This static build output is served by Nginx on the target server
             }
         }
 
         stage('Deploy via Ansible') {
             steps {
-                echo "Deploying using Ansible playbook..."
+                echo "Deploying Angular dist/ to Nginx server via Ansible..."
                 sh '''
-                    ansible-playbook ${ANSIBLE_DIR}/deploy-nodejs-app.yml \
+                    ansible-playbook ${ANSIBLE_DIR}/deploy-angular-nginx.yml \
                         --extra-vars "env=${DEPLOY_ENV} app_name=${APP_NAME}" \
                         -v
                 '''
+                // Ansible playbook copies dist/<app-name>/ to Nginx web root
+                // e.g. /var/www/html/ or /usr/share/nginx/html/
+                // Then reloads Nginx: systemctl reload nginx
             }
         }
 
         stage('Health Check') {
             steps {
-                echo "Verifying deployment is live..."
+                echo "Verifying Angular app is live via Nginx..."
                 sh '''
                     sleep 10
-                    STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://your-server-ip/health)
+                    STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://your-server-ip)
                     if [ "$STATUS" -eq 200 ]; then
-                        echo "Health check passed. App is running."
+                        echo "Health check passed. Angular app is live on Nginx."
                     else
                         echo "Health check FAILED. HTTP Status: $STATUS"
                         exit 1
@@ -123,10 +138,10 @@ pipeline {
 
     post {
         success {
-            echo "Pipeline completed. ${APP_NAME} deployed to ${DEPLOY_ENV} successfully."
+            echo "Angular app (${APP_NAME}) deployed to ${DEPLOY_ENV} successfully."
         }
         failure {
-            echo "Pipeline FAILED. Review the stage logs above to identify the issue."
+            echo "Pipeline FAILED. Check the stage logs above."
         }
         always {
             cleanWs()
