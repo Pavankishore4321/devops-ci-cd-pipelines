@@ -80,4 +80,4 @@ Before using Jenkins files, configure these in Jenkins → Manage Jenkins → Cr
 DevOps & Cloud Engineer | 3+ Years
 AWS Certified Solutions Architect – Associate | AWS Cloud Practitioner
 
-[LinkedIn](https://www.linkedin.com/in/nakka-pavan-kishore-103226221/)
+[LinkedIn](https://www.linkedin.com/in/nakka-pavan-kishore)
